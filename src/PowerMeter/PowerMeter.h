@@ -67,6 +67,14 @@ public:
     int16_t getSignedValue(uint8_t* data, uint16_t offset);
     bool validateXdsData(const XdsPowerMeasurementData& data);
     void printXdsDataDetails(const XdsPowerMeasurementData& data, uint8_t* rawData);
+    
+    // 串口命令处理相关函数
+    void processSerialCommands();
+    void handleSerialCommand(String command);
+    void enableNotifications();
+    void disableNotifications();
+    void printHelp();
+    void printStatus();
 
     void SetAccPWR(uint16_t val)        { accPWR = val; }
     void SetInstPWR(uint16_t val)       { instPWR = val; }
@@ -105,6 +113,7 @@ private:
     uint32_t lastValidDataTime;     // 最后一次有效数据时间
     uint32_t dataTimeoutMs;         // 数据超时时间 (毫秒)
     bool dataQualityGood;           // 数据质量状态
+    bool notificationsEnabled;      // 通知启用状态
     
     // 静态回调函数
     static void staticPowerMeasurementNotify(BLEClientCharacteristic* chr, uint8_t* data, uint16_t len);

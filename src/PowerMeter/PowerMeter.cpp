@@ -59,10 +59,11 @@ PowerMeter::PowerMeter(powermeter_config * cfg) :
     lastValidDataTime = 0;
     dataTimeoutMs = 5000;      // 5秒数据超时
     dataQualityGood = true;
+    notificationsEnabled = false;  // 初始化通知状态为禁用
 }
 
 void PowerMeter::begin() {
-    Serial.println("Starting Virtual PowerMeter Setup...");
+    Serial.println("Starting PowerMeter Setup...");
     Serial.println("Adding PWR profile");
     pwr->setUnhandledEventListener(PrintUnhandledANTEvent);
     pwr->setAllEventListener(ReopenANTChannel);
@@ -72,7 +73,8 @@ void PowerMeter::begin() {
     Serial.println("Bluefruit52 BLEUART Startup");
     Serial.println("---------------------------\n");
     Bluefruit.autoConnLed(false);
-    Bluefruit.configPrphBandwidth(BANDWIDTH_LOW);
+    // Bluefruit.configPrphBandwidth(BANDWIDTH_NORMAL);
+    // Bluefruit.configCentralBandwidth(BANDWIDTH_NORMAL);
 
     Serial.print("Starting BLE stack as Central. Expecting 'true':");
     bool ret = Bluefruit.begin(0, 1);  // 0 peripheral, 1 central
@@ -97,6 +99,13 @@ void PowerMeter::begin() {
     Serial.println("Virtual PowerMeter initialized successfully!");
     Serial.printf("Base Power: %dW, Base Cadence: %dRPM\n", basePower, baseCadence);
     Serial.printf("Startup is complete.\n");
+    
+    // 串口命令使用提示
+    Serial.println("\n============================");
+    Serial.println("Serial Commands Available:");
+    Serial.println("Type 'help' for command list");
+    Serial.println("Type 'scan' to start BLE scan");
+    Serial.println("============================\n");
 }
 
 void PowerMeter::generateVirtualData() // 生成虚拟的功率和踏频数据
@@ -148,7 +157,23 @@ void PowerMeter::simulateHallInterrupt() // 模拟霍尔传感器中断，用于
 
 void PowerMeter::update()
 {   
+    // 处理串口命令
+    processSerialCommands();
+    
     uint32_t currentTime = millis();
+    static uint32_t lastStatusCheck = 0;
+    static uint32_t lastDataRequest = 0;
+    
+    // 每5秒检查一次连接状态
+    if (currentTime - lastStatusCheck > 5000) {
+        lastStatusCheck = currentTime;
+        if (isConnected) {
+            Serial.printf("Status: Connected, lastValidDataTime: %d, currentTime: %d\n", 
+                         lastValidDataTime, currentTime);
+        } else {
+            Serial.println("Status: Not connected");
+        }
+    }
     
     // 检查数据超时 (仅在已连接时检查)
     if (isConnected && lastValidDataTime > 0) {
@@ -183,7 +208,8 @@ void PowerMeter::update()
         pwr->SetInstantCadence(instCAD);
         
         // 确定数据源
-        bool usingRealData = isConnected && (lastValidDataTime > 0 && currentTime - lastValidDataTime <= dataTimeoutMs);
+        // bool usingRealData = isConnected && (lastValidDataTime > 0 && currentTime - lastValidDataTime <= dataTimeoutMs);
+        bool usingRealData = isConnected;
         
         if (usingRealData) {
             Serial.printf("ANT+ Data Sent (XDS BLE) - Power: %dW, Cadence: %dRPM, AccPWR: %d, Events: %d\n", 
@@ -238,13 +264,21 @@ void PowerMeter::startScanning() {
     }
     
     Serial.println("Starting BLE scan for power meters...");
+    Serial.printf("Looking for service UUID: 0x%04X\n", MESH_PROXY_SERVICE_UUID);
     
     // 设置扫描回调
     Bluefruit.Scanner.setRxCallback(staticScanCallback);
+    Bluefruit.Scanner.filterUuid(meshProxyService.uuid);
+    
+    // 设置扫描参数以确保持续扫描
+    Bluefruit.Scanner.restartOnDisconnect(true);
     
     // 开始扫描
     Bluefruit.Scanner.start(0);  // 0 = 永久扫描直到找到设备
     isScanning = true;
+    
+    Serial.println("BLE scanning started successfully");
+    Serial.println("Scanning will continue until correct device is found...");
 }
 
 void PowerMeter::onConnect(uint16_t conn_handle) {
@@ -259,13 +293,8 @@ void PowerMeter::onConnect(uint16_t conn_handle) {
         // 发现特征值
         if (powerMeasurementChar.discover()) {
             Serial.println("Cycling Power Measurement characteristic discovered");
-            
-            // 启用通知
-            if (powerMeasurementChar.enableNotify()) {
-                Serial.println("Power measurement notifications enabled");
-            } else {
-                Serial.println("Failed to enable power measurement notifications");
-            }
+            Serial.println("Use 'enable' command to start notifications");
+            Serial.println("Type 'help' for available commands");
         } else {
             Serial.println("Failed to discover Cycling Power Measurement characteristic");
         }
@@ -278,6 +307,7 @@ void PowerMeter::onDisconnect(uint16_t conn_handle, uint8_t reason) {
     Serial.printf("Disconnected from power meter, handle: %d, reason: 0x%02X\n", conn_handle, reason);
     isConnected = false;
     connectionHandle = 0;
+    notificationsEnabled = false;  // 重置通知状态
     
     // 重新开始扫描
     Serial.println("Restarting scan...");
@@ -297,13 +327,22 @@ void PowerMeter::onPowerMeasurementNotify(BLEClientCharacteristic* chr, uint8_t*
 }
 
 void PowerMeter::parsePowerData(uint8_t* data, uint16_t len) {
-    // 简单的数据解析，假设接收到的是标准的功率测量数据
-    if (len >= 4) {
-        // 解析功率数据 (假设前2字节是功率，后2字节是踏频)
-        instPWR = (data[1] << 8) | data[0];  // 小端序
-        if (len >= 4) {
-            instCAD = (data[3] << 8) | data[2];  // 小端序
-        }
+    Serial.printf("Parsing power data, length: %d bytes\n", len);
+    
+    // 打印原始数据用于调试
+    Serial.print("Raw data: ");
+    for (int i = 0; i < len; i++) {
+        Serial.printf("%02X ", data[i]);
+    }
+    Serial.println();
+    
+    // 使用喜德盛数据解析
+    XdsPowerMeasurementData xdsData = parseXdsData(data, len);
+    
+    if (xdsData.isValid) {
+        // 更新功率和踏频数据
+        instPWR = xdsData.totalPower;
+        instCAD = xdsData.cadence;
         
         // 更新累积功率
         accPWR += instPWR;
@@ -311,21 +350,48 @@ void PowerMeter::parsePowerData(uint8_t* data, uint16_t len) {
         
         // 更新最后有效数据时间
         lastValidDataTime = millis();
+        validDataCount++;
         
-        Serial.printf("Power: %dW, Cadence: %dRPM\n", instPWR, instCAD);
+        // 打印解析后的数据
+        Serial.printf("=== Xidesheng Power Data ===\n");
+        Serial.printf("Total Power: %dW\n", xdsData.totalPower);
+        Serial.printf("Left Power: %dW\n", xdsData.leftPower);
+        Serial.printf("Right Power: %dW\n", xdsData.rightPower);
+        Serial.printf("Cadence: %dRPM\n", xdsData.cadence);
+        Serial.printf("Angle: %d degrees\n", xdsData.angle);
+        Serial.printf("Error Code: 0x%02X\n", xdsData.errorCode);
+        Serial.println("============================");
+        
+        // 打印详细的数据分析
+        printXdsDataDetails(xdsData, data);
+        
+    } else {
+        invalidDataCount++;
+        Serial.printf("Invalid Xidesheng data packet (count: %d)\n", invalidDataCount);
+        
+        // 如果数据无效，尝试基本解析作为备用
+        if (len >= 4) {
+            uint16_t basicPower = (data[1] << 8) | data[0];
+            uint16_t basicCadence = (data[3] << 8) | data[2];
+            Serial.printf("Fallback parsing - Power: %dW, Cadence: %dRPM\n", basicPower, basicCadence);
+        }
     }
 }
 
 // 静态回调函数实现
 void PowerMeter::staticPowerMeasurementNotify(BLEClientCharacteristic* chr, uint8_t* data, uint16_t len) {
+    Serial.println("Received power measurement notify");
     if (instance) {
         instance->onPowerMeasurementNotify(chr, data, len);
     }
 }
 
 void PowerMeter::staticConnectCallback(uint16_t conn_handle) {
+    Serial.printf("staticConnectCallback called with handle: %d\n", conn_handle);
     if (instance) {
         instance->onConnect(conn_handle);
+    } else {
+        Serial.println("ERROR: instance is null in staticConnectCallback");
     }
 }
 
@@ -337,9 +403,14 @@ void PowerMeter::staticDisconnectCallback(uint16_t conn_handle, uint8_t reason) 
 
 void PowerMeter::staticScanCallback(ble_gap_evt_adv_report_t* report) {
     if (instance) {
+        Serial.print("Scan found device: ");
+        Serial.printBufferReverse(report->peer_addr.addr, 6, ':');
+        Serial.print(", RSSI: ");
+        Serial.println(report->rssi);
+        
         // 检查是否是喜德盛功率计
         if (Bluefruit.Scanner.checkReportForService(report, instance->meshProxyService)) {
-            Serial.print("Found power meter: ");
+            Serial.print("Found power meter with correct service: ");
             Serial.printBufferReverse(report->peer_addr.addr, 6, ':');
             Serial.println();
             
@@ -347,8 +418,13 @@ void PowerMeter::staticScanCallback(ble_gap_evt_adv_report_t* report) {
             Bluefruit.Scanner.stop();
             instance->isScanning = false;
             
+            Serial.println("Attempting to connect...");
             // 连接到设备
             Bluefruit.Central.connect(report);
+        } else {
+            Serial.println("Device does not have the required service, continuing scan...");
+            // 明确地恢复扫描以确保继续
+            Bluefruit.Scanner.resume();
         }
     }
 }
@@ -482,4 +558,131 @@ void PowerMeter::printXdsDataDetails(const XdsPowerMeasurementData& data, uint8_
                  rawData[10], data.errorCode);
     Serial.printf("Data Valid:   %s\n", data.isValid ? "YES" : "NO");
     Serial.println("============================");
+}
+
+// ==================== 串口命令处理功能 ====================
+
+void PowerMeter::processSerialCommands() {
+    if (Serial.available()) {
+        String command = Serial.readStringUntil('\n');
+        command.trim(); // 移除前后空格和换行符
+        if (command.length() > 0) {
+            handleSerialCommand(command);
+        }
+    }
+}
+
+void PowerMeter::handleSerialCommand(String command) {
+    command.toLowerCase(); // 转换为小写以便比较
+    
+    Serial.println("============================");
+    Serial.printf("Received command: %s\n", command.c_str());
+    Serial.println("============================");
+    
+    if (command == "help" || command == "h") {
+        printHelp();
+    }
+    else if (command == "status" || command == "s") {
+        printStatus();
+    }
+    else if (command == "enable" || command == "en") {
+        enableNotifications();
+    }
+    else if (command == "disable" || command == "dis") {
+        disableNotifications();
+    }
+    else if (command == "scan") {
+        if (!isScanning && !isConnected) {
+            Serial.println("Starting BLE scan...");
+            startScanning();
+        } else if (isScanning) {
+            Serial.println("Already scanning...");
+        } else {
+            Serial.println("Already connected to a device");
+        }
+    }
+    else if (command == "disconnect" || command == "disc") {
+        if (isConnected) {
+            Serial.println("Disconnecting from device...");
+            Bluefruit.disconnect(connectionHandle);
+        } else {
+            Serial.println("Not connected to any device");
+        }
+    }
+    else {
+        Serial.printf("Unknown command: %s\n", command.c_str());
+        Serial.println("Type 'help' for available commands");
+    }
+    Serial.println();
+}
+
+void PowerMeter::enableNotifications() {
+    if (!isConnected) {
+        Serial.println("Error: Not connected to any device");
+        return;
+    }
+    
+    if (notificationsEnabled) {
+        Serial.println("Notifications are already enabled");
+        return;
+    }
+    
+    Serial.println("Enabling notifications...");
+    
+    if (powerMeasurementChar.enableNotify()) {
+        notificationsEnabled = true;
+        Serial.println("✓ Notifications enabled successfully!");
+    } else {
+        Serial.println("✗ Failed to enable notifications");
+    }
+}
+
+void PowerMeter::disableNotifications() {
+    if (!isConnected) {
+        Serial.println("Error: Not connected to any device");
+        return;
+    }
+    
+    if (!notificationsEnabled) {
+        Serial.println("Notifications are already disabled");
+        return;
+    }
+    
+    Serial.println("Disabling notifications...");
+    
+    if (powerMeasurementChar.disableNotify()) {
+        notificationsEnabled = false;
+        Serial.println("✓ Notifications disabled successfully!");
+    } else {
+        Serial.println("✗ Failed to disable notifications");
+    }
+}
+
+void PowerMeter::printHelp() {
+    Serial.println("Available Commands:");
+    Serial.println("==================");
+    Serial.println("help, h        - Show this help message");
+    Serial.println("status, s      - Show current status");
+    Serial.println("enable, en     - Enable notifications");
+    Serial.println("disable, dis   - Disable notifications");
+    Serial.println("scan           - Start BLE scanning");
+    Serial.println("disconnect, disc - Disconnect from device");
+    Serial.println("==================");
+}
+
+void PowerMeter::printStatus() {
+    Serial.println("Current Status:");
+    Serial.println("===============");
+    Serial.printf("Connected:           %s\n", isConnected ? "YES" : "NO");
+    Serial.printf("Scanning:            %s\n", isScanning ? "YES" : "NO");
+    Serial.printf("Notifications:       %s\n", notificationsEnabled ? "ENABLED" : "DISABLED");
+    Serial.printf("Connection Handle:   %d\n", connectionHandle);
+    Serial.printf("Valid Data Count:    %d\n", validDataCount);
+    Serial.printf("Invalid Data Count:  %d\n", invalidDataCount);
+    Serial.printf("Data Quality:        %s\n", dataQualityGood ? "GOOD" : "POOR");
+    Serial.printf("Last Valid Data:     %lu ms ago\n", 
+                 lastValidDataTime > 0 ? (millis() - lastValidDataTime) : 0);
+    Serial.printf("Current Power:       %d W\n", instPWR);
+    Serial.printf("Current Cadence:     %d RPM\n", instCAD);
+    Serial.println("===============");
 }
