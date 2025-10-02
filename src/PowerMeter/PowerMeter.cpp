@@ -72,7 +72,7 @@ void PowerMeter::begin() {
 
     Serial.println("Bluefruit52 BLEUART Startup");
     Serial.println("---------------------------\n");
-    Bluefruit.autoConnLed(false);
+    Bluefruit.autoConnLed(true);
     // Bluefruit.configPrphBandwidth(BANDWIDTH_NORMAL);
     // Bluefruit.configCentralBandwidth(BANDWIDTH_NORMAL);
 
@@ -105,6 +105,7 @@ void PowerMeter::begin() {
     Serial.println("Serial Commands Available:");
     Serial.println("Type 'help' for command list");
     Serial.println("Type 'scan' to start BLE scan");
+    Serial.println("Notifications will auto-enable on connect");
     Serial.println("============================\n");
 }
 
@@ -293,7 +294,17 @@ void PowerMeter::onConnect(uint16_t conn_handle) {
         // 发现特征值
         if (powerMeasurementChar.discover()) {
             Serial.println("Cycling Power Measurement characteristic discovered");
-            Serial.println("Use 'enable' command to start notifications");
+            
+            // 自动启用通知
+            Serial.println("Auto-enabling notifications...");
+            if (powerMeasurementChar.enableNotify()) {
+                notificationsEnabled = true;
+                Serial.println("✓ Power measurement notifications enabled automatically");
+                Serial.println("Use 'disable' command to stop notifications if needed");
+            } else {
+                Serial.println("✗ Failed to enable power measurement notifications");
+                Serial.println("Use 'enable' command to try manually");
+            }
             Serial.println("Type 'help' for available commands");
         } else {
             Serial.println("Failed to discover Cycling Power Measurement characteristic");
