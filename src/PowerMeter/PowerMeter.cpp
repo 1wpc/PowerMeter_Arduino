@@ -206,18 +206,18 @@ void PowerMeter::update()
         pwr->SetInstantPWR(instPWR);
         pwr->SetAccumulatedPWR(accPWR);
         pwr->SetPWREventCount(PWREventCount);
-        pwr->SetInstantCadence(instCAD);
+        pwr->SetInstantCadence(0xFF);  // 0xFF = OFF, 暂时禁用踏频数据
         
         // 确定数据源
         // bool usingRealData = isConnected && (lastValidDataTime > 0 && currentTime - lastValidDataTime <= dataTimeoutMs);
         bool usingRealData = isConnected;
         
         if (usingRealData) {
-            Serial.printf("ANT+ Data Sent (XDS BLE) - Power: %dW, Cadence: %dRPM, AccPWR: %d, Events: %d\n", 
-                         instPWR, instCAD, accPWR, PWREventCount);
+            Serial.printf("ANT+ Data Sent (XDS BLE) - Power: %dW, Cadence: OFF, AccPWR: %d, Events: %d\n", 
+                         instPWR, accPWR, PWREventCount);
         } else {
-            Serial.printf("ANT+ Data Sent (Virtual) - Power: %dW, Cadence: %dRPM, AccPWR: %d, Events: %d\n", 
-                         instPWR, instCAD, accPWR, PWREventCount);
+            Serial.printf("ANT+ Data Sent (Virtual) - Power: %dW, Cadence: OFF, AccPWR: %d, Events: %d\n", 
+                         instPWR, accPWR, PWREventCount);
         }
         
         // 定期打印数据质量统计 (每分钟一次)

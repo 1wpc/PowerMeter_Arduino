@@ -19,7 +19,7 @@ unsigned long newmessage = 0;
 void setup(void)
 {
   Serial.begin(115200);
-  while (!Serial);
+  delay(100);
   Serial.println("=== BLE PowerMeter Central Starting ===");
 
   power.begin();
